@@ -15,20 +15,25 @@ type requester interface {
 }
 
 type broker interface {
+	Created(sender amp.Sender)
 	Subscribe(amp.Sender, map[string]int64) // subscribe to the topics
 	Unsubscribe(amp.Sender)                 // unsubscribe from all topics
 	Wait()                                  // wait for clean exit
 }
 
 type connection interface {
-	Read() ([]byte, error)                     // get client message
-	Write(payload []byte, deflated bool) error // send message to the client
-	DeflateSupported() bool                    // does websocket connection support per message deflate
-	Headers() map[string]string                // http headers we got on connection open
-	No() uint64                                // connection identifier (for grouping logs)
-	Close() error                              // close connection
-	Meta() map[string]string                   // session metadata, set by the client
-	SetMeta(map[string]string)                 // set session metadata
+	Read() ([]byte, error)                       // get client message
+	Write(payload []byte, deflated bool) error   // send message to the client
+	DeflateSupported() bool                      // does websocket connection support per message deflate
+	Headers() map[string]string                  // http headers we got on connection open
+	SetBackendHeaders(headers map[string]string) // set BackendHeaders
+	GetBackendHeaders() map[string]string        // get BackendHeaders
+	No() uint64                                  // connection identifier (for grouping logs)
+	Close() error                                // close connection
+	Meta() map[string]string                     // session metadata, set by the client
+	SetMeta(map[string]string)                   // set session metadata
+	GetRemoteIp() string
+	GetCookie() string
 }
 
 type counter struct {
@@ -72,16 +77,20 @@ type Sessions struct {
 	wg                 sync.WaitGroup
 	wsConnections      counter
 	poolingConnections counter
+	// topicWhitelist is a list of topics that clients can send requests to.
+	// Empty value means block all.
+	topicWhitelist []string
 }
 
-// Factory creates new seessions factory.
-func Factory(ctx context.Context, broker broker, requester requester) *Sessions {
+// Factory creates new Sessions factory.
+func Factory(ctx context.Context, broker broker, requester requester, topicWhitelist []string) *Sessions {
 	cancelSig, cancelSessions := context.WithCancel(context.Background())
 	s := &Sessions{
-		broker:    broker,
-		requester: requester,
-		cancelSig: cancelSig,
-		closed:    make(chan struct{}),
+		broker:         broker,
+		requester:      requester,
+		cancelSig:      cancelSig,
+		closed:         make(chan struct{}),
+		topicWhitelist: topicWhitelist,
 	}
 
 	go s.waitDone(ctx, cancelSessions)
@@ -93,7 +102,7 @@ func Factory(ctx context.Context, broker broker, requester requester) *Sessions 
 func (s *Sessions) Serve(conn connection) {
 	s.wg.Add(1)
 	s.wsConnections.Up()
-	serve(s.cancelSig, conn, s.requester, s.broker, amp.CompatibilityVersionDefault)
+	serve(s.cancelSig, conn, s.requester, s.broker, s.topicWhitelist, amp.CompatibilityVersionDefault)
 	s.wg.Done()
 	s.wsConnections.Down()
 }
@@ -103,7 +112,7 @@ func (s *Sessions) Serve(conn connection) {
 func (s *Sessions) ServeV1(conn connection) {
 	s.wg.Add(1)
 	s.wsConnections.Up()
-	serve(s.cancelSig, conn, s.requester, s.broker, amp.CompatibilityVersion1)
+	serve(s.cancelSig, conn, s.requester, s.broker, s.topicWhitelist, amp.CompatibilityVersion1)
 	s.wg.Done()
 	s.wsConnections.Down()
 }
@@ -189,6 +198,10 @@ func (p *pooler) SendMsgs(m []*amp.Msg) {
 
 func (p *pooler) Meta() map[string]string {
 	return p.meta
+}
+
+func (p *pooler) Headers() map[string]string {
+	return nil
 }
 
 func (p *pooler) waitOne(app context.Context, interval time.Duration) {

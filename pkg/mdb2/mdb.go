@@ -5,14 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/minus5/svckit/asm"
-	"go.mongodb.org/mongo-driver/bson/bsontype"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"reflect"
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/minus5/svckit/asm"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 
 	"github.com/minus5/svckit/dcy"
 	"github.com/minus5/svckit/env"
@@ -193,7 +194,12 @@ func (mdb *Mdb) Init(connStr string, opts ...func(db *Mdb)) error {
 	// this code matches mgo behavior and allows to decode interface{} as JSON
 	// https://jira.mongodb.org/browse/GODRIVER-988
 	tM := reflect.TypeOf(bson.M{})
-	reg := bson.NewRegistryBuilder().RegisterTypeMapEntry(bsontype.EmbeddedDocument, tM).Build()
+	reg := bson.NewRegistryBuilder().RegisterTypeMapEntry(bsontype.EmbeddedDocument, tM).
+		// Read int32 as int (when deserializing into interface{}) for backward compatibility
+		RegisterTypeMapEntry(bsontype.Int32, reflect.TypeOf(int(0))).
+		// Read bson.Array as []interface{} for backward compatibility
+		RegisterTypeMapEntry(bsontype.Array, reflect.TypeOf([]interface{}{})).
+		Build()
 	mdb.clientOptions.SetRegistry(reg)
 
 	mdb.checkPointIn = time.Minute
@@ -364,8 +370,28 @@ func (mdb *Mdb) ResetIndexCache() {
 	// probably not needed but leaving for backward compatibility for now
 }
 
-// EnsureIndex creates index if it doesn't already exist
+// EnsureIndex creates sparse index if it doesn't already exist
+// The index will by default be sparse and built in background
 func (mdb *Mdb) EnsureIndex(col string, key []string, expireAfter time.Duration) error {
+	opts := options.Index().
+		SetBackground(true).
+		SetSparse(true)
+	if expireAfter > 0 {
+		opts.SetExpireAfterSeconds(int32(expireAfter / time.Second))
+	}
+
+	return mdb.ensureIndex(col, key, opts)
+}
+
+// EnsureCustomIndex creates index with the specified options if it doesn't already exist
+// NOTE: IndexOptions#Name will always be overridden to obey legacy naming system derived from key values
+func (mdb *Mdb) EnsureCustomIndex(col string, key []string, options *options.IndexOptions) error {
+	return mdb.ensureIndex(col, key, options)
+}
+
+// ensureIndex ensures index exist. Uses legacy key parsing for backward compatibility meaning that
+// name is automatically set from the key values
+func (mdb *Mdb) ensureIndex(col string, key []string, indexOptions *options.IndexOptions) error {
 	c := mdb.db.Collection(col)
 	parsedKeys, err := parseIndexKey(key)
 	if err != nil {
@@ -373,14 +399,8 @@ func (mdb *Mdb) EnsureIndex(col string, key []string, expireAfter time.Duration)
 	}
 	index := mongo.IndexModel{}
 	index.Keys = parsedKeys.key
-	options := options.Index().
-		SetBackground(true).
-		SetSparse(true).
-		SetName(parsedKeys.name)
-	if expireAfter > 0 {
-		options.SetExpireAfterSeconds(int32(expireAfter / time.Second))
-	}
-	index.Options = options
+	index.Options = indexOptions.SetName(parsedKeys.name)
+
 	_, err = c.Indexes().CreateOne(context.Background(), index)
 	return err
 }

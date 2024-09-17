@@ -1,6 +1,6 @@
-//Package broker prosljedjuje poruke svim consumerima nekog topica.
-//Garantira poredak po topicu.
-//Clean concurency and exit.
+// Package broker prosljedjuje poruke svim consumerima nekog topica.
+// Garantira poredak po topicu.
+// Clean concurency and exit.
 // Reference: https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageBroker.html
 package broker
 
@@ -80,6 +80,9 @@ func (s *Broker) Replay(name string) []*amp.Msg {
 	return msgs
 }
 
+// Created method is required to satisfy sessions.broker interface
+func (s *Broker) Created(c amp.Sender) {}
+
 // Subscribe consumer to topics defined c.Topics()
 // amp.Sender should call this on each change ih his Topics list.
 func (s *Broker) Subscribe(c amp.Sender, newNames map[string]int64) {
@@ -130,7 +133,8 @@ func (s *Broker) find(name string, currentOnNew bool) *spreader {
 	}
 	start := time.Now()
 	topicCount := 1
-	if name == "sportsbook/m" {
+	switch name {
+	case "sportsbook/m", "sportsbook/i_hr":
 		topicCount = 16
 	}
 	spr := newSpreader(name, topicCount)

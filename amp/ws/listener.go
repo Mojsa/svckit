@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -85,7 +84,9 @@ func (l *listener) onConn(tc net.Conn) {
 }
 
 func (l *listener) upgrade(tc net.Conn) (connCap, error) {
-	cc := connCap{}
+	cc := connCap{
+		headers: map[string]string{},
+	}
 
 	ug := ws.Upgrader{
 		// podrzava li klijent websocket permessage-deflate
@@ -125,10 +126,12 @@ func (l *listener) upgrade(tc net.Conn) (connCap, error) {
 		OnHeader: func(k, v []byte) error {
 			key := strings.ToLower(string(k))
 			value := string(v)
+			cc.headers[key] = value
 			switch key {
 			case "user-agent":
 				cc.userAgent = value
-				if strings.Contains(value, "OS 15") || strings.Contains(value, "Mac OS X 10_15") {
+				// na iOS 15, 16, ... ne radi vise web kompresija
+				if strings.Contains(value, "OS 1") || strings.Contains(value, "Mac OS X 10_1") {
 					cc.deflateSupported = false
 				}
 			case "x-forwarded-for":
@@ -136,11 +139,8 @@ func (l *listener) upgrade(tc net.Conn) (connCap, error) {
 					cc.forwardedFor += " "
 				}
 				cc.forwardedFor += value
-			// case "cookie":
-			// 	cc.cookies = parseCookies(value)
-			// 	for k, v := range cc.cookies {
-			// 		log.S("key", k).S("value", v).Debug("cookie")
-			// 	}
+			case "cookie":
+				cc.cookie = value
 			default:
 				log.S("key", key).S("value", value).Debug("header")
 			}
@@ -162,20 +162,4 @@ func parseQueryString(uri []byte) map[string]string {
 		qs[k] = strings.Join(v, ",")
 	}
 	return qs
-}
-
-func parseCookies(rawCookies string) map[string]string {
-	if rawCookies == "" {
-		return nil
-	}
-	header := http.Header{}
-	header.Add("Cookie", rawCookies)
-	request := http.Request{
-		Header: header,
-	}
-	cookies := make(map[string]string)
-	for _, c := range request.Cookies() {
-		cookies[c.Name] = c.Value
-	}
-	return cookies
 }
